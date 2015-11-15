@@ -12,6 +12,7 @@ information, please refer to
 __all__ = ('AndroidMotionEventProvider', )
 
 import os
+from fnmatch import fnmatch
 
 try:
     import android  # NOQA
@@ -51,10 +52,15 @@ class AndroidMotionEventProvider(MotionEventProvider):
     def create_joystick(self, index):
         Logger.info('Android: create joystick <%d>' % index)
         js = pygame.joystick.Joystick(index)
+        if not fnmatch(js.get_name(), "Private pointer:*"):
+             Logger.info('Android: discard joystick <%d> cause name not matched' %
+                         index)
+             return
         js.init()
-        if js.get_numbuttons() == 0:
-            Logger.info('Android: discard joystick <%d> cause no button' %
+        if js.get_numbuttons() == 0 or js.get_numaxes() < 2:
+            Logger.info('Android: discard joystick <%d> cause no button/axes' %
                         index)
+            js.quit()
             return
         self.joysticks.append(js)
 
@@ -65,7 +71,9 @@ class AndroidMotionEventProvider(MotionEventProvider):
             self.create_joystick(i)
 
     def stop(self):
+        for joy in self.joysticks: joy.quit()
         self.joysticks = []
+        pygame.joystick.quit()
 
     def update(self, dispatch_fn):
         if not self.window:
@@ -74,6 +82,7 @@ class AndroidMotionEventProvider(MotionEventProvider):
         w, h = self.window.system_size
         touches = self.touches
         for joy in self.joysticks:
+            naxes = joy.get_numaxes()
             jid = joy.get_id()
             pressed = joy.get_button(0)
             if pressed or jid in touches:
@@ -81,8 +90,8 @@ class AndroidMotionEventProvider(MotionEventProvider):
                 y = 1. - (joy.get_axis(1) * 32768. / h)
 
                 # python for android do * 1000.
-                pressure = joy.get_axis(2) / 1000.
-                radius = joy.get_axis(3) / 1000.
+                pressure = joy.get_axis(2) / 1000. if naxes > 2 else 1.
+                radius =  joy.get_axis(3) / 1000. if naxes > 3 else 1.
 
                 # new touche ?
                 if pressed and jid not in touches:
