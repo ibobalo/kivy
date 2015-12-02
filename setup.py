@@ -12,14 +12,15 @@ from os.path import join, dirname, sep, exists, basename, isdir, abspath
 from os import walk, environ, makedirs, listdir
 from distutils.version import LooseVersion
 from collections import OrderedDict
-from subprocess import check_output
 from time import sleep
 
 if environ.get('KIVY_USE_SETUPTOOLS'):
     from setuptools import setup, Extension
+    print('Using setuptools')
 else:
     from distutils.core import setup
     from distutils.extension import Extension
+    print('Using distutils')
 
 
 if sys.version > '3':
@@ -41,10 +42,10 @@ MAX_CYTHON_VERSION = LooseVersion(MAX_CYTHON_STRING)
 CYTHON_UNSUPPORTED = ()
 
 
-def getoutput(cmd):
+def getoutput(cmd, env=None):
     import subprocess
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE)
+                         stderr=subprocess.PIPE, env=env)
     p.wait()
     if p.returncode:  # if not returncode == 0
         print('WARNING: A problem occured while running {0} (code {1})\n'
@@ -58,8 +59,15 @@ def getoutput(cmd):
 
 def pkgconfig(*packages, **kw):
     flag_map = {'-I': 'include_dirs', '-L': 'library_dirs', '-l': 'libraries'}
+    lenviron = None
+    pconfig = join(dirname(sys.executable), 'libs', 'pkgconfig')
+
+    if isdir(pconfig):
+        lenviron = environ.copy()
+        lenviron['PKG_CONFIG_PATH'] = '{};{}'.format(
+            environ.get('PKG_CONFIG_PATH', ''), pconfig)
     cmd = 'pkg-config --libs --cflags {}'.format(' '.join(packages))
-    results = getoutput(cmd).split()
+    results = getoutput(cmd, lenviron).split()
     for token in results:
         ext = token[:2].decode('utf-8')
         flag = flag_map.get(ext)
@@ -278,6 +286,33 @@ class KivyBuildExt(build_ext):
         return need_update
 
 
+def _check_and_fix_sdl2_mixer(f_path):
+    print("Check if SDL2_mixer smpeg2 have an @executable_path")
+    rpath_from = "@executable_path/../Frameworks/SDL2.framework/Versions/A/SDL2"
+    rpath_to = "@rpath/../../../../SDL2.framework/Versions/A/SDL2"
+    smpeg2_path = ("{}/Versions/A/Frameworks/smpeg2.framework"
+                   "/Versions/A/smpeg2").format(f_path)
+    output = getoutput(("otool -L '{}'").format(smpeg2_path))
+    if "@executable_path" not in output:
+        return
+
+    print("WARNING: Your SDL2_mixer version is invalid")
+    print("WARNING: The smpeg2 framework embedded in SDL2_mixer contains a")
+    print("WARNING: reference to @executable_path that will fail the")
+    print("WARNING: execution of your application.")
+    print("WARNING: We are going to change:")
+    print("WARNING: from: {}".format(rpath_from))
+    print("WARNING: to: {}".format(rpath_to))
+    getoutput("install_name_tool -change {} {} {}".format(
+        rpath_from, rpath_to, smpeg2_path))
+
+    output = getoutput(("otool -L '{}'").format(smpeg2_path))
+    if "@executable_path" not in output:
+        print("WARNING: Change successfully applied!")
+        print("WARNING: You'll never see this message again.")
+    else:
+        print("WARNING: Unable to apply the changes, sorry.")
+
 # -----------------------------------------------------------------------------
 # extract version (simulate doc generation, kivy will be not imported)
 environ['KIVY_DOC_INCLUDE'] = '1'
@@ -347,6 +382,15 @@ if platform == 'ios':
     c_options['use_ios'] = True
     c_options['use_sdl2'] = True
 
+elif platform == 'darwin':
+    if c_options['use_osx_frameworks']:
+        if osx_arch == "i386":
+            print("Warning: building with frameworks fail on i386")
+        else:
+            print("OSX framework used, force to x86_64 only")
+            environ["ARCHFLAGS"] = environ.get("ARCHFLAGS", "-arch x86_64")
+            print("OSX ARCHFLAGS are: {}".format(environ["ARCHFLAGS"]))
+
 # detect gstreamer, only on desktop
 # works if we forced the options or in autodetection
 if platform not in ('ios', 'android') and (c_options['use_gstreamer']
@@ -361,6 +405,9 @@ if platform not in ('ios', 'android') and (c_options['use_gstreamer']
             c_options['use_gstreamer'] = True
             gst_flags = {
                 'extra_link_args': [
+                    '-F/Library/Frameworks',
+                    '-Xlinker', '-rpath',
+                    '-Xlinker', '/Library/Frameworks',
                     '-Xlinker', '-headerpad',
                     '-Xlinker', '190',
                     '-framework', 'GStreamer'],
@@ -384,9 +431,13 @@ if c_options['use_sdl2'] or (
         sdl2_valid = True
         sdl2_flags = {
             'extra_link_args': [
+                '-F/Library/Frameworks',
+                '-Xlinker', '-rpath',
+                '-Xlinker', '/Library/Frameworks',
                 '-Xlinker', '-headerpad',
                 '-Xlinker', '190'],
-            'include_dirs': []
+            'include_dirs': [],
+            'extra_compile_args': ['-F/Library/Frameworks']
         }
         for name in ('SDL2', 'SDL2_ttf', 'SDL2_image', 'SDL2_mixer'):
             f_path = '/Library/Frameworks/{}.framework'.format(name)
@@ -397,6 +448,8 @@ if c_options['use_sdl2'] or (
             sdl2_flags['extra_link_args'] += ['-framework', name]
             sdl2_flags['include_dirs'] += [join(f_path, 'Headers')]
             print('Found sdl2 frameworks: {}'.format(f_path))
+            if name == 'SDL2_mixer':
+                _check_and_fix_sdl2_mixer(f_path)
 
         if not sdl2_valid:
             c_options['use_sdl2'] = False
@@ -548,18 +601,21 @@ def determine_sdl2():
 
     sdl2_path = environ.get('KIVY_SDL2_PATH', None)
 
-    if sdl2_flags and not sdl2_path:
-        return sdl2_flags
-
     # no pkgconfig info, or we want to use a specific sdl2 path, so perform
     # manual configuration
     flags['libraries'] = ['SDL2', 'SDL2_ttf', 'SDL2_image', 'SDL2_mixer']
     split_chr = ';' if platform == 'win32' else ':'
     sdl2_paths = sdl2_path.split(split_chr) if sdl2_path else []
 
+    inc_paths = sdl2_paths
+    if not sdl2_paths:
+        sdl_inc = join(dirname(sys.executable), 'include', 'SDL2')
+        if isdir(sdl_inc):
+            sdl2_paths = [sdl_inc]
+        sdl2_paths.extend(['/usr/local/include/SDL2', '/usr/include/SDL2'])
+
     flags['include_dirs'] = (
-        sdl2_paths if sdl2_paths else
-        ['/usr/local/include/SDL2', '/usr/include/SDL2'])
+        sdl2_paths if sdl2_paths else sdl2_paths)
 
     flags['extra_link_args'] = []
     flags['extra_compile_args'] = []
@@ -842,9 +898,9 @@ if isdir(binary_deps_path):
 setup(
     name='Kivy',
     version=kivy.__version__,
-    author='Kivy Crew',
+    author='Kivy Team and other contributors',
     author_email='kivy-dev@googlegroups.com',
-    url='http://kivy.org/',
+    url='http://kivy.org',
     license='MIT',
     description=(
         'A software library for rapid development of '
@@ -864,6 +920,7 @@ setup(
         'kivy.core.text',
         'kivy.core.video',
         'kivy.core.window',
+        'kivy.deps',
         'kivy.effects',
         'kivy.ext',
         'kivy.graphics',
