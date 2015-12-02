@@ -286,6 +286,8 @@ try:
 
 except (OSError, ImportError, AttributeError):
     # ImportError: ctypes is not available on python-for-android.
+    # AttributeError: ctypes is now available on python-for-android, but
+    #   "undefined symbol: clock_gettime". CF #3797
     # OSError: if the libc cannot be readed (like with buildbot: invalid ELF
     # header)
 
