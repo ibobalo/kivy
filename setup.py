@@ -4,6 +4,15 @@
 #
 
 import sys
+import logging
+
+if sys.version_info[0] == 2:
+    logging.critical(
+        'Unsupported Python version detected!: Kivy 2.0.0 and higher does not '
+        'support Python 2. Please upgrade to Python 3, or downgrade Kivy to '
+        '1.11.1 - the last Kivy release that still supports Python 2.')
+    exit(1)
+
 build_examples = False
 if "--build_examples" in sys.argv:
     build_examples = True
@@ -22,16 +31,7 @@ from subprocess import check_output, CalledProcessError
 from datetime import datetime
 from sysconfig import get_paths
 from pathlib import Path
-import logging
 from setuptools import setup, Extension, find_packages
-
-
-if sys.version_info[0] == 2:
-    logging.critical(
-        'Unsupported Python version detected!: Kivy 2.0.0 and higher does not '
-        'support Python 2. Please upgrade to Python 3, or downgrade Kivy to '
-        '1.11.1 - the last Kivy release that still supports Python 2.')
-
 
 def ver_equal(self, other):
     return self.version == other
@@ -1017,7 +1017,7 @@ if isdir(binary_deps_path):
                 join(root.replace(binary_deps_path, 'binary_deps'), fname))
 
 
-def glob_paths(*patterns, excludes=('.pyc', )):
+def glob_paths(patterns, excludes=('.pyc', )):
     files = []
     base = Path(join(src_path, 'kivy'))
 
@@ -1056,7 +1056,8 @@ if not build_examples:
         package_dir={'kivy': 'kivy'},
         package_data={
             'kivy':
-                glob_paths('**/*.pxd', '**/*.pxi') +
+                glob_paths('**/*.pxd') +
+                glob_paths('**/*.pxi') +
                 glob_paths('data/**/*.*') +
                 glob_paths('include/**/*.*') +
                 glob_paths('tools/**/*.*', excludes=('.pyc', '.enc')) +
