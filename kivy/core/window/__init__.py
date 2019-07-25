@@ -27,6 +27,7 @@ from kivy.context import get_current_context
 from kivy.uix.behaviors import FocusBehavior
 from kivy.setupconfig import USE_SDL2
 from kivy.graphics.transformation import Matrix
+from kivy.graphics.cgl import cgl_get_backend_name
 
 # late import
 VKeyboard = None
@@ -333,14 +334,25 @@ class WindowBase(EventDispatcher):
     __instance = None
     __initialized = False
     _fake_fullscreen = False
-    _density = 1
 
     # private properties
+    _density = NumericProperty(1)
     _size = ListProperty([0, 0])
     _modifiers = ListProperty([])
     _rotation = NumericProperty(0)
     _clearcolor = ObjectProperty([0, 0, 0, 1])
     _focus = BooleanProperty(True)
+
+    gl_backends_allowed = []
+    """
+    A list of Kivy gl backend names, which if not empty, will be the
+    exclusive list of gl backends that can be used with this window.
+    """
+
+    gl_backends_ignored = []
+    """
+    A list of Kivy gl backend names that may not be used with this window.
+    """
 
     children = ListProperty([])
     '''List of the children of this window.
@@ -511,7 +523,9 @@ class WindowBase(EventDispatcher):
     def _get_center(self):
         return self.width / 2., self.height / 2.
 
-    center = AliasProperty(_get_center, bind=('width', 'height'), cache=True)
+    center = AliasProperty(_get_center,
+                           bind=('width', 'height', '_density'),
+                           cache=True)
     '''Center of the rotated window.
 
     .. versionadded:: 1.0.9
@@ -1199,6 +1213,19 @@ class WindowBase(EventDispatcher):
             cutoff=self.shape_cutoff, color_key=value
         )
 
+    def get_gl_backend_name(self):
+        """
+        Returns the gl backend that will or is used with this window.
+        """
+        return cgl_get_backend_name(
+            allowed=self.gl_backends_allowed,
+            ignored=self.gl_backends_ignored)
+
+    def initialize_gl(self):
+        from kivy.core.gl import init_gl
+        init_gl(allowed=self.gl_backends_allowed,
+                ignored=self.gl_backends_ignored)
+
     def create_window(self, *largs):
         '''Will create the main window and configure it.
 
@@ -1226,8 +1253,7 @@ class WindowBase(EventDispatcher):
             self._unbind_create_window()
 
         if not self.initialized:
-            from kivy.core.gl import init_gl
-            init_gl()
+            self.initialize_gl()
 
             # create the render context and canvas, only the first time.
             from kivy.graphics import RenderContext, Canvas
